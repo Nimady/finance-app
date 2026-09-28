@@ -41,6 +41,7 @@ from .models import PurchaseOrder, PurchaseOrderItem
 
 class PurchaseOrderItemInline(admin.TabularInline):
     model = PurchaseOrderItem
+    ordering = ("pk",)
     verbose_name = "ligne"
     verbose_name_plural = "lignes"
     extra = 1
@@ -598,7 +599,10 @@ class PurchaseOrderAdmin(SaveRedirectToWelcomeMixin, PageSizeAdminMixin, admin.M
                 "total_amount": item.total_line(),
                 "vat_percent": obj.vat_percent,
             }
-            for index, item in enumerate(obj.items.select_related("product"), start=1)
+            for index, item in enumerate(
+                obj.items.select_related("product").order_by("pk"),
+                start=1,
+            )
         ]
 
     def export_purchase_pdf(self, request, object_id):

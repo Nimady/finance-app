@@ -4,9 +4,11 @@ from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group, Permission
 from django.contrib.staticfiles import finders
+from django.db import connection
 from django.template.loader import get_template
 from django.test import SimpleTestCase, TestCase
 from django.test import override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from reportlab.lib.units import mm
 from reportlab.platypus import Spacer
@@ -684,6 +686,41 @@ class ProformaConversionTests(TestCase):
         self.assertEqual(commercial.items.count(), 1)
         self.assertEqual(self.product.unit_qty, 7)
 
+    def test_convert_to_commercial_preserves_proforma_item_pk_order(self):
+        products = {
+            name: Product.objects.create(
+                description=f"Product {name}",
+                part_number=f"ORDER-{name}",
+                unit_qty=10,
+                sale_price=Decimal("25.00"),
+            )
+            for name in ("A", "B", "X", "Z")
+        }
+        proforma = ProformaInvoice.objects.create(importer=self.importer)
+        for name in ("X", "A", "Z", "B"):
+            ProformaInvoiceItem.objects.create(
+                invoice=proforma,
+                product=products[name],
+                quantity=1,
+                unit_price=Decimal("25.00"),
+            )
+
+        with CaptureQueriesContext(connection) as queries:
+            commercial = proforma.convert_to_commercial(user_initiated=True)
+
+        self.assertEqual(
+            list(commercial.items.order_by("pk").values_list("product__description", flat=True)),
+            ["Product X", "Product A", "Product Z", "Product B"],
+        )
+        source_table = ProformaInvoiceItem._meta.db_table
+        source_queries = [
+            query["sql"]
+            for query in queries.captured_queries
+            if source_table in query["sql"] and query["sql"].lstrip().upper().startswith("SELECT")
+        ]
+        self.assertTrue(source_queries)
+        self.assertTrue(any("ORDER BY" in query.upper() and '"ID" ASC' in query.upper() for query in source_queries))
+
     def test_convert_to_commercial_only_decreases_stock_once(self):
         proforma = ProformaInvoice.objects.create(importer=self.importer)
         ProformaInvoiceItem.objects.create(
@@ -957,6 +994,64 @@ class InvoiceFormVatDefaultTests(TestCase):
         invoice = form.save()
         self.assertEqual(invoice.delivery_time, "User delivery")
         self.assertEqual(invoice.terms_conditions, "User payment")
+
+
+class InvoiceItemPdfOrderingTests(TestCase):
+
+    def setUp(self):
+        CompanySetting.objects.create(
+            company_name="Societe Ordering",
+            vat_amount=Decimal("20.00"),
+        )
+        self.products = {
+            name: Product.objects.create(
+                description=f"Product {name}",
+                part_number=f"ORDER-{name}",
+                unit_qty=100,
+                sale_price=Decimal("10.00"),
+            )
+            for name in ("A", "B", "X", "Z")
+        }
+
+    def test_invoice_admin_and_pdf_items_use_line_pk_order(self):
+        cases = (
+            (ProformaInvoice, ProformaInvoiceItem),
+            (CommercialInvoice, CommercialInvoiceItem),
+        )
+
+        for invoice_model, item_model in cases:
+            with self.subTest(invoice_model=invoice_model.__name__):
+                invoice = invoice_model.objects.create()
+                for name in ("X", "A", "Z", "B"):
+                    item_model.objects.create(
+                        invoice=invoice,
+                        product=self.products[name],
+                        quantity=1,
+                        unit_price=Decimal("10.00"),
+                    )
+
+                model_admin = admin.site._registry[invoice_model]
+                self.assertEqual(model_admin.inlines[0].ordering, ("pk",))
+
+                with CaptureQueriesContext(connection) as queries:
+                    pdf_items = model_admin.get_invoice_items_for_pdf(invoice)
+
+                self.assertEqual(
+                    [item["description"] for item in pdf_items],
+                    ["Product X", "Product A", "Product Z", "Product B"],
+                )
+                item_queries = [
+                    query["sql"]
+                    for query in queries.captured_queries
+                    if item_model._meta.db_table in query["sql"]
+                ]
+                self.assertTrue(item_queries)
+                self.assertTrue(
+                    any(
+                        "ORDER BY" in query.upper() and '"ID" ASC' in query.upper()
+                        for query in item_queries
+                    )
+                )
 
 
 class CommercialInvoiceStockTests(TestCase):

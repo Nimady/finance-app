@@ -43,6 +43,7 @@ from .models import (
 class ProformaItemInline(admin.TabularInline):
 
     model = ProformaInvoiceItem
+    ordering = ("pk",)
     verbose_name = "ligne"
     verbose_name_plural = "lignes"
     extra = 1
@@ -320,7 +321,10 @@ class InvoiceAdminMixin:
                 "unit_price": item.unit_price,
                 "total_amount": item.total_line(),
             }
-            for index, item in enumerate(obj.items.select_related("product"), start=1)
+            for index, item in enumerate(
+                obj.items.select_related("product").order_by("pk"),
+                start=1,
+            )
         ]
 
     def get_invoice_hs_code(self, obj):
@@ -874,6 +878,7 @@ class ProformaInvoiceAdmin(InvoiceAdminMixin, SaveRedirectToWelcomeMixin, PageSi
 class CommercialItemInline(admin.TabularInline):
 
     model = CommercialInvoiceItem
+    ordering = ("pk",)
     verbose_name = "ligne"
     verbose_name_plural = "lignes"
     extra = 1

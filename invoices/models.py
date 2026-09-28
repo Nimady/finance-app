@@ -175,7 +175,7 @@ class ProformaInvoice(BaseInvoice):
                     terms_conditions=self.terms_conditions,
                 )
 
-            for item in self.items.select_related("product"):
+            for item in self.items.select_related("product").order_by("pk"):
                 CommercialInvoiceItem.objects.create(
                     invoice=commercial,
                     product=item.product,

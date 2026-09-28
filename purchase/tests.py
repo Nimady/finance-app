@@ -4,9 +4,11 @@ from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group, Permission
 from django.contrib.staticfiles import finders
+from django.db import connection
 from django.template.loader import get_template
 from django.test import SimpleTestCase, TestCase
 from django.test import override_settings
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
 from company.models import CompanySetting
@@ -355,6 +357,54 @@ class PurchaseOrderItemTests(TestCase):
 
         self.assertEqual(item.unit_price, Decimal("18.75"))
         self.assertEqual(product.purchase_price, Decimal("12.50"))
+
+
+class PurchaseOrderItemPdfOrderingTests(TestCase):
+
+    def test_purchase_admin_and_pdf_items_use_line_pk_order(self):
+        CompanySetting.objects.create(
+            company_name="Societe Ordering",
+            vat_amount=Decimal("20.00"),
+        )
+        products = {
+            name: Product.objects.create(
+                description=f"Product {name}",
+                part_number=f"ORDER-{name}",
+                purchase_price=Decimal("10.00"),
+            )
+            for name in ("A", "B", "X", "Z")
+        }
+        purchase_order = PurchaseOrder.objects.create()
+        for name in ("X", "A", "Z", "B"):
+            PurchaseOrderItem.objects.create(
+                purchase_order=purchase_order,
+                product=products[name],
+                quantity=1,
+                unit_price=Decimal("10.00"),
+            )
+
+        model_admin = admin.site._registry[PurchaseOrder]
+        self.assertEqual(model_admin.inlines[0].ordering, ("pk",))
+
+        with CaptureQueriesContext(connection) as queries:
+            pdf_items = model_admin.get_purchase_items_for_pdf(purchase_order)
+
+        self.assertEqual(
+            [item["description"] for item in pdf_items],
+            ["Product X", "Product A", "Product Z", "Product B"],
+        )
+        item_queries = [
+            query["sql"]
+            for query in queries.captured_queries
+            if PurchaseOrderItem._meta.db_table in query["sql"]
+        ]
+        self.assertTrue(item_queries)
+        self.assertTrue(
+            any(
+                "ORDER BY" in query.upper() and '"ID" ASC' in query.upper()
+                for query in item_queries
+            )
+        )
 
 
 @override_settings(ALLOWED_HOSTS=["testserver", "localhost", "127.0.0.1"])
