@@ -13,6 +13,7 @@ from django.test import SimpleTestCase, TestCase
 from django.test import override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
+from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.platypus import Spacer
 
@@ -443,8 +444,16 @@ class PdfPaginationTests(SimpleTestCase):
                 self.assertEqual(table.repeatRows, 1)
                 self.assertTrue(all(cell.topPadding == 5 for cell in table._cellStyles[0]))
                 self.assertTrue(all(cell.bottomPadding == 5 for cell in table._cellStyles[0]))
-                self.assertTrue(all(cell.topPadding == 4 for cell in table._cellStyles[1]))
-                self.assertTrue(all(cell.bottomPadding == 4 for cell in table._cellStyles[1]))
+                self.assertTrue(all(cell.topPadding == 3 for cell in table._cellStyles[1]))
+                self.assertTrue(all(cell.bottomPadding == 3 for cell in table._cellStyles[1]))
+
+    def test_later_invoice_page_fits_at_least_seven_more_product_rows(self):
+        table = _build_items_table(self._pdf_items(80), "EUR", _build_styles())
+        frame_height = A4[1] - ((PDF_TOP_MARGIN + PDF_BOTTOM_MARGIN) * mm) - 12
+
+        first_page_chunk = table.split(A4[0] - (2 * PDF_INVOICE_SIDE_MARGIN_MM * mm), frame_height)[0]
+
+        self.assertGreaterEqual(len(first_page_chunk._cellvalues) - 1, 46)
 
     def test_51_product_totals_remain_complete(self):
         items = self._pdf_items(51)
@@ -611,6 +620,8 @@ class PdfPaginationTests(SimpleTestCase):
             item_styles["table_cell_amount"].fontSize,
             item_styles["table_cell_part_number"].fontSize,
         )
+        self.assertEqual(item_styles["table_cell"].leading, 7.5)
+        self.assertEqual(styles["table_cell"].leading, 8)
 
     def test_purchase_order_item_table_font_size_keeps_normal_pdf_size(self):
         styles = _build_styles()

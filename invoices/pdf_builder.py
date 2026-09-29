@@ -722,9 +722,19 @@ def _build_purchase_order_styles():
 
 
 def _build_invoice_item_table_styles(styles):
-    # Product item tables use the normal table font size. Pagination controls
-    # how many rows are attempted on the first page; text is not compressed.
-    return styles
+    item_styles = styles.copy()
+    for key in (
+        "table_cell",
+        "table_cell_part_number",
+        "table_cell_amount",
+        "table_cell_right",
+        "table_cell_center",
+    ):
+        item_styles[key] = styles[key].clone(
+            f"{styles[key].name}ProductRow",
+            leading=7.5,
+        )
+    return item_styles
 
 
 def _build_document_info(invoice, styles):
@@ -1361,8 +1371,8 @@ def _build_items_table(items, currency, styles, amount_from_last_page=None):
                 ("RIGHTPADDING", (3, 0), (3, -1), 2),
                 ("TOPPADDING", (0, 0), (-1, -1), 5),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-                ("TOPPADDING", (0, 1), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 1), (-1, -1), 4),
+                ("TOPPADDING", (0, 1), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 1), (-1, -1), 3),
             ]
         )
     )
@@ -1370,6 +1380,7 @@ def _build_items_table(items, currency, styles, amount_from_last_page=None):
 
 
 def _build_shipping_items_table(items, styles):
+    styles = _build_invoice_item_table_styles(styles)
     rows = [
         [
             Paragraph("Item No", styles["table_head_center"]),
@@ -1417,8 +1428,8 @@ def _build_shipping_items_table(items, styles):
                 ("RIGHTPADDING", (0, 0), (-1, -1), 4),
                 ("TOPPADDING", (0, 0), (-1, -1), 5),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-                ("TOPPADDING", (0, 1), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 1), (-1, -1), 4),
+                ("TOPPADDING", (0, 1), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 1), (-1, -1), 3),
             ]
         )
     )
@@ -2255,6 +2266,7 @@ def _build_purchase_report_table(*, purchase_orders, currency, styles):
 
 
 def _build_purchase_order_items_table(items, currency, styles, amount_from_last_page=None):
+    styles = _build_invoice_item_table_styles(styles)
     rows = [[
         Paragraph("Item", styles["table_head"]),
         Paragraph("Description", styles["table_head"]),
@@ -2318,8 +2330,8 @@ def _build_purchase_order_items_table(items, currency, styles, amount_from_last_
                 ("TOPPADDING", (0, 0), (-1, -1), 5),
                 ("TOPPADDING", (1, 1), (1, -1), 6),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-                ("TOPPADDING", (0, 1), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 1), (-1, -1), 4),
+                ("TOPPADDING", (0, 1), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 1), (-1, -1), 3),
                 ("LEFTPADDING", (4, 0), (-1, -1), 2),
                 ("RIGHTPADDING", (4, 0), (-1, -1), 4),
             ]
