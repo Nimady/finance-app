@@ -1,4 +1,7 @@
+import re
+from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
 
 from django.contrib import admin
 from django.contrib.auth import get_user_model
@@ -22,7 +25,10 @@ from .forms import CommercialInvoiceForm, ProformaInvoiceForm
 from .models import CommercialInvoice, CommercialInvoiceItem, ProformaInvoice, ProformaInvoiceItem
 from .pdf_builder import (
     PDF_BOTTOM_MARGIN,
-    PDF_FIRST_PAGE_ITEM_LIMIT,
+    PDF_FONT_BOLD,
+    PDF_FONT_BOLD_PATH,
+    PDF_FONT_REGULAR,
+    PDF_FONT_REGULAR_PATH,
     PDF_INVOICE_BOX_HEIGHT_MM,
     PDF_INVOICE_BOX_TITLE_GAP_MM,
     PDF_INVOICE_BOX_WIDTH_MM,
@@ -30,8 +36,6 @@ from .pdf_builder import (
     PDF_INVOICE_CONTENT_PADDING_MM,
     PDF_INVOICE_REFERENCE_GAP_MM,
     PDF_INVOICE_SIDE_MARGIN_MM,
-    PDF_OTHER_PAGE_ITEM_LIMIT,
-    PDF_SECOND_PAGE_ITEM_LIMIT,
     PDF_TOP_MARGIN,
     TOTALS_AMOUNT_COLUMN_WIDTH_MM,
     TOTALS_CELL_HORIZONTAL_PADDING,
@@ -41,6 +45,7 @@ from .pdf_builder import (
     _info_box,
     _build_invoice_details,
     _build_invoice_item_table_styles,
+    _build_items_table,
     _build_totals_table,
     _build_shipping_items_table,
     _build_packing_section,
@@ -54,7 +59,8 @@ from .pdf_builder import (
     _format_pdf_title,
     _format_preserving_layout,
     _partner_card,
-    _split_items_for_pages,
+    build_invoice_pdf,
+    build_purchase_order_pdf,
     format_footer_invoice_lines,
 )
 
@@ -290,7 +296,7 @@ class StaffInvoiceScopeTests(TestCase):
         self.assertContains(proforma_response, other_proforma.invoice_number)
 
 
-class PdfPaginationTests(TestCase):
+class PdfPaginationTests(SimpleTestCase):
 
     def test_product_description_layout_is_preserved_for_pdf_tables(self):
         formatted = _format_preserving_layout(
@@ -348,17 +354,200 @@ class PdfPaginationTests(TestCase):
         self.assertEqual(_format_measurement("60.50"), "60.5")
         self.assertEqual(_format_measurement("60.125"), "60.125")
 
-    def test_pdf_item_pages_use_more_available_page_space(self):
-        items = list(range(44))
+    def test_pdf_uses_bundled_dejavu_fonts(self):
+        styles = _build_styles()
+        pdf_bytes = self._build_test_invoice_pdf(1)
 
-        pages = _split_items_for_pages(
-            items,
-            first_page_max=PDF_FIRST_PAGE_ITEM_LIMIT,
-            second_page_max=PDF_SECOND_PAGE_ITEM_LIMIT,
-            other_pages_max=PDF_OTHER_PAGE_ITEM_LIMIT,
+        self.assertTrue(PDF_FONT_REGULAR_PATH.is_file())
+        self.assertTrue(PDF_FONT_BOLD_PATH.is_file())
+        self.assertEqual(styles["body"].fontName, PDF_FONT_REGULAR)
+        self.assertEqual(styles["title"].fontName, PDF_FONT_BOLD)
+        self.assertIn(b"DejaVuSans", pdf_bytes)
+
+    def test_item_table_allows_reportlab_to_split_rows_across_pages(self):
+        table = _build_items_table(self._pdf_items(51), "EUR", _build_styles())
+
+        self.assertEqual(table.repeatRows, 1)
+        self.assertEqual(table.splitByRow, 1)
+        self.assertEqual(len(table._cellvalues), 52)
+
+    def test_invoice_pagination_uses_available_page_height(self):
+        expected_page_counts = {
+            1: 1,
+            9: 1,
+            10: 1,
+            20: 2,
+            21: 2,
+            49: 3,
+            51: 3,
+        }
+
+        actual_page_counts = {
+            item_count: self._pdf_page_count(self._build_test_invoice_pdf(item_count))
+            for item_count in expected_page_counts
+        }
+
+        self.assertEqual(actual_page_counts, expected_page_counts)
+
+    def test_commercial_invoice_uses_the_same_natural_pagination(self):
+        expected_page_counts = {
+            1: 1,
+            9: 1,
+            10: 1,
+            20: 2,
+            21: 2,
+            49: 3,
+            51: 3,
+        }
+
+        actual_page_counts = {
+            item_count: self._pdf_page_count(
+                self._build_test_invoice_pdf(item_count, invoice_type_name="CommercialInvoice")
+            )
+            for item_count in expected_page_counts
+        }
+
+        self.assertEqual(actual_page_counts, expected_page_counts)
+
+    def test_purchase_order_pagination_uses_available_page_height(self):
+        expected_page_counts = {
+            1: 1,
+            9: 1,
+            10: 1,
+            20: 2,
+            21: 2,
+            49: 2,
+            51: 2,
+        }
+
+        actual_page_counts = {
+            item_count: self._pdf_page_count(self._build_test_purchase_order_pdf(item_count))
+            for item_count in expected_page_counts
+        }
+
+        self.assertEqual(actual_page_counts, expected_page_counts)
+
+    @staticmethod
+    def _pdf_items(item_count):
+        return [
+            {
+                "index": index,
+                "description": f"Test product {index}",
+                "part_number": f"PN-{index}",
+                "hs_code": "1234",
+                "quantity": 1,
+                "unit_price": Decimal("10.00"),
+                "total_amount": Decimal("10.00"),
+            }
+            for index in range(1, item_count + 1)
+        ]
+
+    @classmethod
+    def _build_test_invoice_pdf(cls, item_count, invoice_type_name="ProformaInvoice"):
+        invoice_class = type(
+            invoice_type_name,
+            (),
+            {"total_amount": lambda self: Decimal(item_count * 10)},
+        )
+        invoice = invoice_class()
+        invoice.invoice_number = "TEST-PDF"
+        invoice.invoice_date = date(2026, 9, 29)
+        invoice.freight = Decimal("0.00")
+        invoice.discount = Decimal("0.00")
+        invoice.vat_percent = Decimal("0.00")
+        invoice.terms_conditions = ""
+        invoice.delivery_time = ""
+        invoice.price_for = ""
+        invoice.our_reference = ""
+        company = SimpleNamespace(
+            company_name="Test Company",
+            currency="EUR",
+            company_logo=None,
+            invoice_note="",
+            terms_conditions="",
+            delivery_time="",
+            proforma_validity=None,
+            bank="",
+            iban="",
+            bic="",
+            footer_invoice="",
+            company_phone="",
+            company_fax="",
+            company_email="",
+        )
+        partner = {
+            "name": "Test Partner",
+            "addresses": ["Test address"],
+            "phones": [],
+            "email": "",
+            "website": "",
+            "fax": "",
+        }
+        return build_invoice_pdf(
+            invoice=invoice,
+            company=company,
+            items=cls._pdf_items(item_count),
+            importer=partner,
+            end_user=partner,
+            invoice_title="Proforma Invoice",
+            currency="EUR",
         )
 
-        self.assertEqual([len(page) for page in pages], [9, 20, 15])
+    @classmethod
+    def _build_test_purchase_order_pdf(cls, item_count):
+        purchase_order = SimpleNamespace(
+            purchase_number="TEST-PO",
+            purchase_date=date(2026, 9, 29),
+            vat_percent=Decimal("0.00"),
+            freight=Decimal("0.00"),
+            shipment="",
+            sent_by="",
+            sales_condition="",
+            payment_condition="",
+            delivery_terms="",
+        )
+        company = SimpleNamespace(
+            company_name="Test Company",
+            currency="EUR",
+            company_logo=None,
+            note="",
+            address="",
+            company_address="",
+            siren="",
+            company_email="",
+            company_phone="",
+            company_fax="",
+            footer_order="",
+            president="",
+            bank="",
+            iban="",
+            bic="",
+            footer_invoice="",
+        )
+        partner = {
+            "name": "Test Partner",
+            "addresses": ["Test address"],
+            "phones": [],
+            "email": "",
+            "website": "",
+            "fax": "",
+        }
+        items = [
+            {**item, "vat_percent": Decimal("0.00")}
+            for item in cls._pdf_items(item_count)
+        ]
+        return build_purchase_order_pdf(
+            purchase_order=purchase_order,
+            company=company,
+            items=items,
+            seller=partner,
+            requester=partner,
+            currency="EUR",
+        )
+
+    @staticmethod
+    def _pdf_page_count(pdf_bytes):
+        return len(re.findall(rb"/Type\s*/Page\b", pdf_bytes))
 
     def test_pdf_body_uses_extra_space_above_footer(self):
         self.assertEqual(PDF_TOP_MARGIN, 38)

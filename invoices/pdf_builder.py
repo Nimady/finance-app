@@ -4,10 +4,6 @@ from pathlib import Path
 import re
 
 pdf_canvas = None
-PDF_FIRST_PAGE_ITEM_LIMIT = 9
-PDF_SECOND_PAGE_ITEM_LIMIT = 20
-PDF_OTHER_PAGE_ITEM_LIMIT = 20
-PDF_LATER_PAGE_CONTENT_GAP_MM = 0
 PDF_TOP_MARGIN = 38
 # The footer finishes below 23 mm. Keep that safety boundary while allowing
 # the body to use the small strip that was previously left empty above it.
@@ -42,7 +38,6 @@ try:
     from reportlab.pdfgen import canvas as pdf_canvas
     from reportlab.platypus import (
         HRFlowable,
-        PageBreak,
         Paragraph,
         SimpleDocTemplate,
         Spacer,
@@ -70,9 +65,12 @@ if REPORTLAB_IMPORT_ERROR is None:
             return width, self.lineWidth
 
 
-PDF_FONT_REGULAR = "Helvetica"
-PDF_FONT_BOLD = "Helvetica-Bold"
+PDF_FONT_REGULAR = "FinanceDejaVuSans"
+PDF_FONT_BOLD = "FinanceDejaVuSans-Bold"
 PDF_FONTS_REGISTERED = False
+PDF_FONT_DIR = Path(__file__).resolve().parent / "fonts"
+PDF_FONT_REGULAR_PATH = PDF_FONT_DIR / "DejaVuSans.ttf"
+PDF_FONT_BOLD_PATH = PDF_FONT_DIR / "DejaVuSans-Bold.ttf"
 
 
 def _register_pdf_fonts():
@@ -81,44 +79,23 @@ def _register_pdf_fonts():
     if PDF_FONTS_REGISTERED or REPORTLAB_IMPORT_ERROR is not None:
         return
 
-    # Use a Unicode TrueType font so Turkish characters render correctly in PDFs.
-    font_candidates = [
-        (
-            "FinanceArial",
-            "FinanceArial-Bold",
-            Path("C:/Windows/Fonts/arial.ttf"),
-            Path("C:/Windows/Fonts/arialbd.ttf"),
-        ),
-        (
-            "FinanceDejaVuSans",
-            "FinanceDejaVuSans-Bold",
-            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
-        ),
-        (
-            "FinanceLiberationSans",
-            "FinanceLiberationSans-Bold",
-            Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"),
-            Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"),
-        ),
+    missing_fonts = [
+        str(path)
+        for path in (PDF_FONT_REGULAR_PATH, PDF_FONT_BOLD_PATH)
+        if not path.is_file()
     ]
+    if missing_fonts:
+        raise RuntimeError(f"Bundled PDF font files are missing: {', '.join(missing_fonts)}")
 
-    for regular_name, bold_name, regular_path, bold_path in font_candidates:
-        if not regular_path.exists() or not bold_path.exists():
-            continue
-
-        pdfmetrics.registerFont(TTFont(regular_name, str(regular_path)))
-        pdfmetrics.registerFont(TTFont(bold_name, str(bold_path)))
-        pdfmetrics.registerFontFamily(
-            regular_name,
-            normal=regular_name,
-            bold=bold_name,
-            italic=regular_name,
-            boldItalic=bold_name,
-        )
-        PDF_FONT_REGULAR = regular_name
-        PDF_FONT_BOLD = bold_name
-        break
+    pdfmetrics.registerFont(TTFont(PDF_FONT_REGULAR, str(PDF_FONT_REGULAR_PATH)))
+    pdfmetrics.registerFont(TTFont(PDF_FONT_BOLD, str(PDF_FONT_BOLD_PATH)))
+    pdfmetrics.registerFontFamily(
+        PDF_FONT_REGULAR,
+        normal=PDF_FONT_REGULAR,
+        bold=PDF_FONT_BOLD,
+        italic=PDF_FONT_REGULAR,
+        boldItalic=PDF_FONT_BOLD,
+    )
 
     PDF_FONTS_REGISTERED = True
 
@@ -163,45 +140,24 @@ def build_invoice_pdf(*, invoice, company, items, importer, end_user, invoice_ti
     if _is_shipping_document(document_type):
         story.extend(_build_shipping_document_intro(invoice, company, styles))
         story.append(Spacer(1, 4 * mm))
-        item_pages = _split_items_for_pages(
-            items,
-            first_page_max=PDF_FIRST_PAGE_ITEM_LIMIT,
-            second_page_max=PDF_SECOND_PAGE_ITEM_LIMIT,
-            other_pages_max=PDF_OTHER_PAGE_ITEM_LIMIT,
+        story.append(_build_shipping_items_table(items, styles))
+        packing_section = _build_packing_section(
+            invoice=invoice,
+            packing_entries=packing_entries or [],
+            styles=styles,
         )
-        for page_index, page_items in enumerate(item_pages):
-            if page_index > 0:
-                story.append(PageBreak())
-                story.append(Spacer(1, PDF_LATER_PAGE_CONTENT_GAP_MM * mm))
-            story.append(_build_shipping_items_table(page_items, styles))
-            if page_index == len(item_pages) - 1:
-                packing_section = _build_packing_section(
-                    invoice=invoice,
-                    packing_entries=packing_entries or [],
-                    styles=styles,
-                )
-                if packing_section:
-                    story.append(Spacer(1, 4 * mm))
-                    story.extend(packing_section)
+        if packing_section:
+            story.append(Spacer(1, 4 * mm))
+            story.extend(packing_section)
     else:
-        item_pages = _split_items_for_pages(
-            items,
-            first_page_max=PDF_FIRST_PAGE_ITEM_LIMIT,
-            second_page_max=PDF_SECOND_PAGE_ITEM_LIMIT,
-            other_pages_max=PDF_OTHER_PAGE_ITEM_LIMIT,
-        )
+        item_pages = [items]
         page_totals = _compute_page_totals(
             invoice=invoice,
             item_pages=item_pages,
         )
-        for page_index, page_items in enumerate(item_pages):
-            if page_index > 0:
-                story.append(PageBreak())
-                story.append(Spacer(1, PDF_LATER_PAGE_CONTENT_GAP_MM * mm))
-            amount_from_last_page = page_totals[page_index - 1]["cumulative_gross_value"] if page_index > 0 else None
-            story.append(_build_items_table(page_items, currency, styles, amount_from_last_page=amount_from_last_page))
-            story.append(Spacer(1, 1 * mm))
-            story.append(_build_page_totals_flowable(page_index, invoice, currency, styles, page_totals))
+        story.append(_build_items_table(items, currency, styles))
+        story.append(Spacer(1, 1 * mm))
+        story.append(_build_page_totals_flowable(0, invoice, currency, styles, page_totals))
 
     def draw_page(canvas, doc):
         _draw_page_frame(
@@ -404,21 +360,11 @@ def build_purchase_order_pdf(*, purchase_order, company, items, seller, requeste
     story.extend(_build_purchase_order_context_blocks(seller, requester, purchase_order, company, styles, requester_is_explicit))
     story.append(Spacer(1, 6 * mm))
 
-    item_pages = _split_items_for_pages(
-        items,
-        first_page_max=PDF_FIRST_PAGE_ITEM_LIMIT,
-        second_page_max=PDF_SECOND_PAGE_ITEM_LIMIT,
-        other_pages_max=PDF_OTHER_PAGE_ITEM_LIMIT,
-    )
+    item_pages = [items]
     page_totals = _compute_purchase_order_page_totals(purchase_order=purchase_order, item_pages=item_pages)
-    for page_index, page_items in enumerate(item_pages):
-        if page_index > 0:
-            story.append(PageBreak())
-            story.append(Spacer(1, PDF_LATER_PAGE_CONTENT_GAP_MM * mm))
-        amount_from_last_page = page_totals[page_index - 1]["gross_value"] if page_index > 0 else None
-        story.append(_build_purchase_order_items_table(page_items, currency, styles, amount_from_last_page=amount_from_last_page))
-        story.append(Spacer(1, 1 * mm))
-        story.append(_build_purchase_order_totals_flowable(page_index, purchase_order, currency, styles, page_totals))
+    story.append(_build_purchase_order_items_table(items, currency, styles))
+    story.append(Spacer(1, 1 * mm))
+    story.append(_build_purchase_order_totals_flowable(0, purchase_order, currency, styles, page_totals))
     story.append(Spacer(1, 4 * mm))
     story.append(_build_purchase_order_commercial_terms_box(purchase_order, company, styles))
 
@@ -2541,21 +2487,6 @@ def _build_purchase_order_signature_block(purchase_order, company, styles):
     return [table]
 
 
-
-
-def _split_items_for_pages(items, *, first_page_max, other_pages_max, second_page_max=None):
-    if not items:
-        return [[]]
-
-    pages = [items[:first_page_max]]
-    remaining = items[first_page_max:]
-    if remaining and second_page_max is not None:
-        pages.append(remaining[:second_page_max])
-        remaining = remaining[second_page_max:]
-    while remaining:
-        pages.append(remaining[:other_pages_max])
-        remaining = remaining[other_pages_max:]
-    return pages
 
 
 if pdf_canvas is not None:
