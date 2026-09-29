@@ -47,6 +47,7 @@ from .pdf_builder import (
     _build_invoice_details,
     _build_invoice_item_table_styles,
     _build_items_table,
+    _build_page_totals_flowable,
     _build_purchase_order_items_table,
     _build_totals_table,
     _build_shipping_items_table,
@@ -62,6 +63,8 @@ from .pdf_builder import (
     _format_measurement,
     _format_pdf_title,
     _format_preserving_layout,
+    _invoice_page_content_height,
+    _paginate_invoice_items_by_height,
     _partner_card,
     build_invoice_pdf,
     build_purchase_order_pdf,
@@ -477,6 +480,89 @@ class PdfPaginationTests(SimpleTestCase):
         self.assertEqual(invoice_totals["all_pages_total"], Decimal("622.00"))
         self.assertEqual(purchase_totals["all_pages_gross"], Decimal("510.00"))
         self.assertEqual(purchase_totals["all_pages_total"], Decimal("627.00"))
+
+    def test_height_paginated_invoice_keeps_required_accounting_blocks(self):
+        items = self._pdf_items(51)
+        for item in items:
+            item["description"] = "Long product description requiring multiple wrapped lines " * 4
+
+        invoice = SimpleNamespace(
+            vat_percent=Decimal("20.00"),
+            freight=Decimal("15.00"),
+            discount=Decimal("5.00"),
+        )
+        styles = _build_styles()
+        first_page_height = 300
+        later_page_height = 600
+        item_pages = _paginate_invoice_items_by_height(
+            items=items,
+            invoice=invoice,
+            currency="EUR",
+            styles=styles,
+            first_page_height=first_page_height,
+            later_page_height=later_page_height,
+        )
+        page_totals = _compute_page_totals(invoice=invoice, item_pages=item_pages)
+
+        self.assertGreaterEqual(len(item_pages), 3)
+        for page_index, page_items in enumerate(item_pages):
+            is_last_page = page_index == len(item_pages) - 1
+            amount_from_last_page = (
+                page_totals[page_index - 1]["cumulative_gross_value"]
+                if page_index > 0
+                else None
+            )
+            item_table = _build_items_table(
+                page_items,
+                "EUR",
+                styles,
+                amount_from_last_page=amount_from_last_page,
+            )
+            item_text = self._flowable_plain_text(item_table)
+            totals_flowable = _build_page_totals_flowable(
+                page_index,
+                invoice,
+                "EUR",
+                styles,
+                page_totals,
+            )
+            totals_text = self._flowable_plain_text(totals_flowable)
+
+            if page_index > 0:
+                self.assertIn("Amount from Last Page", item_text)
+            if not is_last_page:
+                expected_label = (
+                    f"Amount of Page 1 of {len(item_pages)}"
+                    if page_index == 0
+                    else f"Sub Total of Page {page_index + 1} of {len(item_pages)}"
+                )
+                self.assertIn(expected_label, totals_text)
+                self.assertNotIn("Grand Total Amount", totals_text)
+            else:
+                for label in ("Total Amount", "Freight", "Vat Amount", "Grand Total Amount"):
+                    self.assertIn(label, totals_text)
+
+            page_height = _invoice_page_content_height(
+                page_items=page_items,
+                page_index=page_index,
+                is_last_page=is_last_page,
+                amount_from_last_page=amount_from_last_page,
+                invoice=invoice,
+                currency="EUR",
+                styles=styles,
+            )
+            available_height = first_page_height if page_index == 0 else later_page_height
+            self.assertLessEqual(page_height, available_height)
+
+    @classmethod
+    def _flowable_plain_text(cls, value):
+        if isinstance(value, (list, tuple)):
+            return " ".join(cls._flowable_plain_text(item) for item in value)
+        if hasattr(value, "_cellvalues"):
+            return cls._flowable_plain_text(value._cellvalues)
+        if hasattr(value, "getPlainText"):
+            return value.getPlainText()
+        return str(value or "")
 
     @staticmethod
     def _pdf_items(item_count):

@@ -38,6 +38,7 @@ try:
     from reportlab.pdfgen import canvas as pdf_canvas
     from reportlab.platypus import (
         HRFlowable,
+        PageBreak,
         Paragraph,
         SimpleDocTemplate,
         Spacer,
@@ -150,14 +151,38 @@ def build_invoice_pdf(*, invoice, company, items, importer, end_user, invoice_ti
             story.append(Spacer(1, 4 * mm))
             story.extend(packing_section)
     else:
-        item_pages = [items]
+        frame_height = document.height - 12
+        first_page_height = frame_height - _measure_flowables_height(story, document.width)
+        item_pages = _paginate_invoice_items_by_height(
+            items=items,
+            invoice=invoice,
+            currency=currency,
+            styles=styles,
+            first_page_height=first_page_height,
+            later_page_height=frame_height,
+        )
         page_totals = _compute_page_totals(
             invoice=invoice,
             item_pages=item_pages,
         )
-        story.append(_build_items_table(items, currency, styles))
-        story.append(Spacer(1, 1 * mm))
-        story.append(_build_page_totals_flowable(0, invoice, currency, styles, page_totals))
+        for page_index, page_items in enumerate(item_pages):
+            if page_index > 0:
+                story.append(PageBreak())
+            amount_from_last_page = (
+                page_totals[page_index - 1]["cumulative_gross_value"]
+                if page_index > 0
+                else None
+            )
+            story.append(
+                _build_items_table(
+                    page_items,
+                    currency,
+                    styles,
+                    amount_from_last_page=amount_from_last_page,
+                )
+            )
+            story.append(Spacer(1, 1 * mm))
+            story.append(_build_page_totals_flowable(page_index, invoice, currency, styles, page_totals))
 
     def draw_page(canvas, doc):
         _draw_page_frame(
@@ -1958,6 +1983,125 @@ def _format_preserving_layout(value):
     escaped = re.sub(r"__([^\n]+?)__", r"<u>\1</u>", escaped)
     escaped = re.sub(r"\*\*([^\n]+?)\*\*", r"<b>\1</b>", escaped)
     return escaped.replace("\n", "<br/>")
+
+
+def _measure_flowables_height(flowables, available_width):
+    if not flowables:
+        return 0
+
+    probe = Table([[list(flowables)]], colWidths=[available_width])
+    probe.setStyle(
+        TableStyle(
+            [
+                ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ("TOPPADDING", (0, 0), (-1, -1), 0),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]
+        )
+    )
+    _width, height = probe.wrap(available_width, A4[1])
+    return height
+
+
+def _invoice_page_content_height(*, page_items, page_index, is_last_page, amount_from_last_page, invoice, currency, styles):
+    item_table = _build_items_table(
+        page_items,
+        currency,
+        styles,
+        amount_from_last_page=amount_from_last_page,
+    )
+    page_gross = sum((Decimal(item["total_amount"]) for item in page_items), Decimal("0.00"))
+    cumulative_gross = Decimal(amount_from_last_page or 0) + page_gross
+
+    if is_last_page:
+        vat_percent = Decimal(getattr(invoice, "vat_percent", 0) or 0)
+        bottom_block = _build_totals_table_from_values(
+            gross_value=cumulative_gross,
+            freight=Decimal(getattr(invoice, "freight", 0) or 0),
+            vat_amount=(cumulative_gross * vat_percent) / Decimal("100"),
+            discount=Decimal(getattr(invoice, "discount", 0) or 0),
+            total_amount=(
+                cumulative_gross
+                + (cumulative_gross * vat_percent) / Decimal("100")
+                + Decimal(getattr(invoice, "freight", 0) or 0)
+                - Decimal(getattr(invoice, "discount", 0) or 0)
+            ),
+            currency=currency,
+            styles=styles,
+        )
+    else:
+        bottom_block = _build_page_gross_value_table(
+            page_number=page_index + 1,
+            total_pages=99,
+            page_amount=page_gross,
+            subtotal_amount=cumulative_gross,
+            currency=currency,
+            styles=styles,
+        )
+
+    return _measure_flowables_height(
+        [item_table, Spacer(1, 1 * mm), bottom_block],
+        sum(INVOICE_ITEM_COLUMN_WIDTHS_MM) * mm,
+    )
+
+
+def _paginate_invoice_items_by_height(*, items, invoice, currency, styles, first_page_height, later_page_height):
+    remaining = list(items)
+    if not remaining:
+        return [[]]
+
+    pages = []
+    cumulative_gross = Decimal("0.00")
+
+    while remaining:
+        page_index = len(pages)
+        available_height = first_page_height if page_index == 0 else later_page_height
+        amount_from_last_page = cumulative_gross if page_index > 0 else None
+
+        final_height = _invoice_page_content_height(
+            page_items=remaining,
+            page_index=page_index,
+            is_last_page=True,
+            amount_from_last_page=amount_from_last_page,
+            invoice=invoice,
+            currency=currency,
+            styles=styles,
+        )
+        if final_height <= available_height:
+            pages.append(remaining)
+            break
+
+        page_item_count = 0
+        # If all remaining rows do not fit with the final totals, this page is
+        # necessarily intermediate and must leave at least one row for a final
+        # page where the complete totals block can be rendered.
+        for candidate_count in range(1, len(remaining)):
+            candidate_height = _invoice_page_content_height(
+                page_items=remaining[:candidate_count],
+                page_index=page_index,
+                is_last_page=False,
+                amount_from_last_page=amount_from_last_page,
+                invoice=invoice,
+                currency=currency,
+                styles=styles,
+            )
+            if candidate_height > available_height:
+                break
+            page_item_count = candidate_count
+
+        if page_item_count == 0:
+            raise ValueError("A product row is too tall to fit on an invoice PDF page with its required totals.")
+
+        page_items = remaining[:page_item_count]
+        pages.append(page_items)
+        cumulative_gross += sum(
+            (Decimal(item["total_amount"]) for item in page_items),
+            Decimal("0.00"),
+        )
+        remaining = remaining[page_item_count:]
+
+    return pages
 
 
 def _compute_page_totals(*, invoice, item_pages):
