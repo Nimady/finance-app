@@ -46,12 +46,15 @@ from .pdf_builder import (
     _build_invoice_details,
     _build_invoice_item_table_styles,
     _build_items_table,
+    _build_purchase_order_items_table,
     _build_totals_table,
     _build_shipping_items_table,
     _build_packing_section,
     _build_info_box_paragraphs,
     _build_purchase_order_styles,
     _build_styles,
+    _compute_page_totals,
+    _compute_purchase_order_page_totals,
     _format_invoice_note_text,
     _format_decimal_comma,
     _format_quantity,
@@ -378,8 +381,8 @@ class PdfPaginationTests(SimpleTestCase):
             10: 1,
             20: 2,
             21: 2,
-            49: 3,
-            51: 3,
+            49: 2,
+            51: 2,
         }
 
         actual_page_counts = {
@@ -396,8 +399,8 @@ class PdfPaginationTests(SimpleTestCase):
             10: 1,
             20: 2,
             21: 2,
-            49: 3,
-            51: 3,
+            49: 2,
+            51: 2,
         }
 
         actual_page_counts = {
@@ -414,8 +417,8 @@ class PdfPaginationTests(SimpleTestCase):
             1: 1,
             9: 1,
             10: 1,
-            20: 2,
-            21: 2,
+            20: 1,
+            21: 1,
             49: 2,
             51: 2,
         }
@@ -426,6 +429,45 @@ class PdfPaginationTests(SimpleTestCase):
         }
 
         self.assertEqual(actual_page_counts, expected_page_counts)
+
+    def test_product_rows_use_compact_padding_and_keep_header_padding(self):
+        item = {**self._pdf_items(1)[0], "vat_percent": Decimal("0.00")}
+        tables = [
+            _build_items_table([item], "EUR", _build_styles()),
+            _build_shipping_items_table([item], _build_styles()),
+            _build_purchase_order_items_table([item], "EUR", _build_purchase_order_styles()),
+        ]
+
+        for table in tables:
+            with self.subTest(column_count=len(table._cellStyles[0])):
+                self.assertEqual(table.repeatRows, 1)
+                self.assertTrue(all(cell.topPadding == 5 for cell in table._cellStyles[0]))
+                self.assertTrue(all(cell.bottomPadding == 5 for cell in table._cellStyles[0]))
+                self.assertTrue(all(cell.topPadding == 4 for cell in table._cellStyles[1]))
+                self.assertTrue(all(cell.bottomPadding == 4 for cell in table._cellStyles[1]))
+
+    def test_51_product_totals_remain_complete(self):
+        items = self._pdf_items(51)
+        invoice = SimpleNamespace(
+            vat_percent=Decimal("20.00"),
+            freight=Decimal("15.00"),
+            discount=Decimal("5.00"),
+        )
+        purchase_order = SimpleNamespace(
+            vat_percent=Decimal("20.00"),
+            freight=Decimal("15.00"),
+        )
+
+        invoice_totals = _compute_page_totals(invoice=invoice, item_pages=[items])[-1]
+        purchase_totals = _compute_purchase_order_page_totals(
+            purchase_order=purchase_order,
+            item_pages=[items],
+        )[-1]
+
+        self.assertEqual(invoice_totals["all_pages_gross_value"], Decimal("510.00"))
+        self.assertEqual(invoice_totals["all_pages_total"], Decimal("622.00"))
+        self.assertEqual(purchase_totals["all_pages_gross"], Decimal("510.00"))
+        self.assertEqual(purchase_totals["all_pages_total"], Decimal("627.00"))
 
     @staticmethod
     def _pdf_items(item_count):

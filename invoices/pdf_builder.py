@@ -1361,6 +1361,8 @@ def _build_items_table(items, currency, styles, amount_from_last_page=None):
                 ("RIGHTPADDING", (3, 0), (3, -1), 2),
                 ("TOPPADDING", (0, 0), (-1, -1), 5),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 1), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 1), (-1, -1), 4),
             ]
         )
     )
@@ -1415,6 +1417,8 @@ def _build_shipping_items_table(items, styles):
                 ("RIGHTPADDING", (0, 0), (-1, -1), 4),
                 ("TOPPADDING", (0, 0), (-1, -1), 5),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 1), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 1), (-1, -1), 4),
             ]
         )
     )
@@ -2314,6 +2318,8 @@ def _build_purchase_order_items_table(items, currency, styles, amount_from_last_
                 ("TOPPADDING", (0, 0), (-1, -1), 5),
                 ("TOPPADDING", (1, 1), (1, -1), 6),
                 ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 1), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 1), (-1, -1), 4),
                 ("LEFTPADDING", (4, 0), (-1, -1), 2),
                 ("RIGHTPADDING", (4, 0), (-1, -1), 4),
             ]
